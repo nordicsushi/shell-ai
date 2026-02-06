@@ -12,14 +12,14 @@ const BUILTINS: [&str; 4] = ["echo", "exit", "type", "pwd"];
 /// 定义 Shell 支持的所有动作
 enum CommandAction {
     Exit,
-    Echo(String),
-    Type(String),
+    Echo(Vec<String>),
+    Type(Vec<String>),
     Pwd,
-    /// 外部命令：包含可执行文件的路径和参数字符串
-    External(String, String),
+    /// 外部命令：包含可执行文件的路径和参数数组
+    External(String, Vec<String>),
     /// 未知命令
     Unknown(String),
-    Cd(String),
+    Cd(Vec<String>),
 }
 
 fn main() {
@@ -68,26 +68,27 @@ fn run_shell_cycle(all_executables: &HashMap<String, PathBuf>) -> io::Result<()>
     match action {
         CommandAction::Exit => std::process::exit(0),
         CommandAction::Echo(args) => {
-            println!("{}", args);
+            println!("{}", args.join(" "));
         }
-        CommandAction::Type(target) => {
-            handle_type_logic(&target);
+        CommandAction::Type(args) => {
+            if let Some(target) = args.first() {
+                handle_type_logic(target);
+            }
         }
         CommandAction::Pwd => {
             println!("{}", env::current_dir()?.display());
         }
-        CommandAction::External(command, args_str) => {
-            let _ = Command::new(command)
-                .args(args_str.split_whitespace())
-                .status();
+        CommandAction::External(command, args) => {
+            let _ = Command::new(command).args(args).status();
         }
-        CommandAction::Cd(arg_str) => {
+        CommandAction::Cd(args) => {
             /*  为什么要使用set_current_dir?
 
             在操作系统层面，cd 不能作为一个外部程序（如 /bin/cd）运行，因为它必须改变 当前 Shell 进程 的状态。
             如果你在 Shell 里调用一个外部的 cd 脚本，它只会改变那个子进程的目录，执行完后回到 Shell，路径依然没变。
             通过 std::env::set_current_dir，你直接触发了操作系统的 chdir 系统调用。
             */
+            let arg_str = args.first().map(|s| s.as_str()).unwrap_or("");
             let target_path = if arg_str.is_empty() || arg_str == "~" {
                 // 处理 cd 或 cd ~，跳转到 HOME
                 env::var("HOME")
@@ -117,21 +118,26 @@ fn run_shell_cycle(all_executables: &HashMap<String, PathBuf>) -> io::Result<()>
 
 /// 解析器：负责命令分发逻辑
 fn parse_command(input: &str, all_executables: &HashMap<String, PathBuf>) -> CommandAction {
-    let (command, args_str) = input.split_once(' ').unwrap_or((input, ""));
+    // 解析整个命令行，获取命令和参数
+    let tokens = parse_args(input);
 
-    match command {
+    if tokens.is_empty() {
+        return CommandAction::Unknown(String::new());
+    }
+
+    let command = &tokens[0];
+    let args: Vec<String> = tokens[1..].to_vec();
+
+    match command.as_str() {
         "exit" => CommandAction::Exit,
-        "echo" => CommandAction::Echo(args_str.to_string()),
+        "echo" => CommandAction::Echo(args),
         "pwd" => CommandAction::Pwd,
-        "type" => {
-            let target = args_str.split_whitespace().next().unwrap_or("").to_string();
-            CommandAction::Type(target)
-        }
-        "cd" => CommandAction::Cd(args_str.to_string()),
+        "type" => CommandAction::Type(args),
+        "cd" => CommandAction::Cd(args),
         _ => {
             // 检查是否在预加载的外部命令缓存中
-            if let Some(_) = all_executables.get(command) {
-                CommandAction::External(command.to_string(), args_str.to_string())
+            if all_executables.contains_key(command) {
+                CommandAction::External(command.to_string(), args)
             } else {
                 CommandAction::Unknown(command.to_string())
             }
@@ -152,6 +158,50 @@ fn handle_type_logic(target: &str) {
     } else {
         eprintln!("{}: not found", target);
     }
+}
+
+/// 解析命令行参数，正确处理引号和空格
+///
+/// 规则：
+/// - 引号内的空格保持原样
+/// - 引号外的连续空格被视为分隔符
+/// - 相邻的引号字符串会被连接（无空格分隔时）
+/// - 空引号被忽略
+///
+/// 返回：包含命令和所有参数的 token 数组
+fn parse_args(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current_arg = String::new();
+    let mut chars = input.chars().peekable();
+    let mut in_quotes = false;
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' => {
+                // 切换引号状态
+                in_quotes = !in_quotes;
+            }
+            ' ' if !in_quotes => {
+                // 在引号外的空格：如果当前参数非空，则完成当前参数
+                if !current_arg.is_empty() {
+                    args.push(current_arg.clone());
+                    current_arg.clear();
+                }
+                // 跳过连续空格
+            }
+            _ => {
+                // 其他字符直接添加到当前参数
+                current_arg.push(ch);
+            }
+        }
+    }
+
+    // 处理最后一个参数
+    if !current_arg.is_empty() {
+        args.push(current_arg);
+    }
+
+    args
 }
 
 /// 动态搜索逻辑 (用于 type 命令)
