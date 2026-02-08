@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Write, BufRead};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -10,8 +10,12 @@ use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
+use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{ColorMode, CompletionType, Config, Context, EditMode, Editor, Helper};
+
+use rig::completion::Prompt;
+use rig::providers::openai;
 
 // --- 常量与类型定义 ---
 const BUILTINS: [&str; 5] = ["echo", "exit", "type", "pwd", "history"];
@@ -109,6 +113,7 @@ enum CommandAction {
     Echo(Vec<String>),
     Type(Vec<String>),
     Pwd,
+    Ai(Vec<String>),
     /// 外部命令：包含可执行文件的路径和参数数组
     External(String, Vec<String>),
     /// 未知命令
@@ -116,8 +121,14 @@ enum CommandAction {
     Cd(Vec<String>),
     /// 管道命令：包含多个命令及其参数的数组
     Pipeline(Vec<(String, Vec<String>)>),
-    /// 历史记录命令
-    History,
+    /// 历史记录命令：可选参数指定显示最后 n 条记录
+    History(Option<usize>),
+    /// 从文件读取历史记录
+    HistoryRead(String),
+    /// 将历史记录写入文件
+    HistoryWrite(String),
+    /// 将新的历史记录追加到文件
+    HistoryAppend(String),
 }
 
 fn main() {
@@ -129,6 +140,8 @@ fn main() {
         .completion_type(CompletionType::List) // 列表模式：第一次TAB响铃，第二次显示列表
         .edit_mode(EditMode::Emacs) // Emacs 编辑模式
         .color_mode(ColorMode::Enabled) // 启用颜色
+        .history_ignore_dups(false) // 不去重复的历史命令
+        .expect("Failed to configure history")
         .build();
 
     // 创建 rustyline Editor 并设置补全器
@@ -137,6 +150,21 @@ fn main() {
         executables: all_executables.clone(),
     };
     rl.set_helper(Some(completer));
+
+    // 在启动时从 HISTFILE 加载历史记录
+    if let Ok(histfile_path) = env::var("HISTFILE") {
+        if let Ok(content) = fs::read_to_string(&histfile_path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    let _ = rl.add_history_entry(trimmed);
+                }
+            }
+        }
+    }
+
+    // 跟踪上次写入文件时的历史记录数量
+    let mut last_written_count: usize = 0;
 
     loop {
         // 构建提示符
@@ -160,7 +188,13 @@ fn main() {
                     // 获取历史记录（不包括当前正在输入的命令）
                     let history: Vec<String> = rl.history().iter().map(|s| s.to_string()).collect();
 
-                    if let Err(e) = execute_command(trimmed, &all_executables, &history) {
+                    if let Err(e) = execute_command(
+                        trimmed,
+                        &all_executables,
+                        &history,
+                        &mut rl,
+                        &mut last_written_count,
+                    ) {
                         eprintln!("Execution error: {}", e);
                     }
                 }
@@ -170,7 +204,9 @@ fn main() {
                 continue;
             }
             Err(ReadlineError::Eof) => {
-                // Ctrl-D: 退出
+                // Ctrl-D: 退出前保存历史
+                let history: Vec<String> = rl.history().iter().map(|s| s.to_string()).collect();
+                save_history_to_histfile(&history);
                 break;
             }
             Err(err) => {
@@ -186,13 +222,19 @@ fn execute_command(
     input: &str,
     all_executables: &HashMap<String, PathBuf>,
     history: &[String],
+    rl: &mut Editor<CommandCompleter, DefaultHistory>,
+    last_written_count: &mut usize,
 ) -> io::Result<()> {
     // 1. 解析：将字符串输入转换为强类型的枚举
     let (action, redirection) = parse_command(input, all_executables);
 
     // 2. 执行：根据枚举成员执行相应逻辑
     match action {
-        CommandAction::Exit => std::process::exit(0),
+        CommandAction::Exit => {
+            // 退出前保存历史到 HISTFILE
+            save_history_to_histfile(history);
+            std::process::exit(0);
+        }
         CommandAction::Echo(args) => {
             let output = args.join(" ");
 
@@ -234,6 +276,9 @@ fn execute_command(
                 // 输出到标准输出
                 println!("{}", output);
             }
+        }
+        CommandAction::Ai(args) => {
+            generate_command_with_ai(args);
         }
         CommandAction::Type(args) => {
             if let Some(target) = args.first() {
@@ -351,10 +396,80 @@ fn execute_command(
         CommandAction::Pipeline(commands) => {
             execute_pipeline(commands)?;
         }
-        CommandAction::History => {
+        CommandAction::History(limit) => {
+            // 根据 limit 参数决定显示多少条历史记录
+            let (items_to_show, start_index) = if let Some(n) = limit {
+                // 显示最后 n 条记录
+                let start = history.len().saturating_sub(n);
+                (&history[start..], start)
+            } else {
+                // 显示所有记录
+                (&history[..], 0)
+            };
+
             // 显示历史记录，格式："    <行号>  <命令>"
-            for (i, cmd) in history.iter().enumerate() {
-                println!("    {}  {}", i + 1, cmd);
+            for (i, cmd) in items_to_show.iter().enumerate() {
+                println!("    {}  {}", start_index + i + 1, cmd);
+            }
+        }
+        CommandAction::HistoryRead(path) => {
+            // 从文件读取历史记录并追加到内存中的历史列表
+            match fs::read_to_string(&path) {
+                Ok(content) => {
+                    for line in content.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
+                            let _ = rl.add_history_entry(trimmed);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("history: {}: {}", path, e);
+                }
+            }
+        }
+        CommandAction::HistoryWrite(path) => {
+            // 将历史记录写入文件
+            match File::create(&path) {
+                Ok(mut file) => {
+                    // 写入所有历史记录，每条命令占一行
+                    for cmd in history {
+                        if let Err(e) = writeln!(file, "{}", cmd) {
+                            eprintln!("history: {}: {}", path, e);
+                            return Ok(());
+                        }
+                    }
+                    // 更新已写入的命令数量
+                    *last_written_count = history.len();
+                }
+                Err(e) => {
+                    eprintln!("history: {}: {}", path, e);
+                }
+            }
+        }
+        CommandAction::HistoryAppend(path) => {
+            // 追加新的历史记录到文件
+            match OpenOptions::new()
+                .write(true)
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    // 只追加自上次写入以来的新命令
+                    let new_commands = &history[*last_written_count..];
+                    for cmd in new_commands {
+                        if let Err(e) = writeln!(file, "{}", cmd) {
+                            eprintln!("history: {}: {}", path, e);
+                            return Ok(());
+                        }
+                    }
+                    // 更新已写入的命令数量
+                    *last_written_count = history.len();
+                }
+                Err(e) => {
+                    eprintln!("history: {}: {}", path, e);
+                }
             }
         }
     }
@@ -367,6 +482,15 @@ fn parse_command(
     input: &str,
     all_executables: &HashMap<String, PathBuf>,
 ) -> (CommandAction, Option<Redirection>) {
+    // 首先检查是否是 AI 命令（以 ! 开头）
+    let trimmed = input.trim();
+    if trimmed.starts_with('!') {
+        // 提取 ! 后面的所有内容作为 AI 提示
+        let prompt = trimmed[1..].trim();
+        let prompt_tokens: Vec<String> = prompt.split_whitespace().map(|s| s.to_string()).collect();
+        return (CommandAction::Ai(prompt_tokens), None);
+    }
+
     // 首先检查是否有管道
     let pipeline_parts = parse_pipeline(input);
 
@@ -407,7 +531,37 @@ fn parse_command(
         "pwd" => CommandAction::Pwd,
         "type" => CommandAction::Type(args),
         "cd" => CommandAction::Cd(args),
-        "history" => CommandAction::History,
+        "history" => {
+            // 检查是否是 -r 选项（从文件读取历史）
+            if args.first().map(|s| s.as_str()) == Some("-r") {
+                if let Some(path) = args.get(1) {
+                    CommandAction::HistoryRead(path.clone())
+                } else {
+                    // -r 选项缺少文件路径参数
+                    CommandAction::Unknown("history".to_string())
+                }
+            } else if args.first().map(|s| s.as_str()) == Some("-w") {
+                // 检查是否是 -w 选项（将历史写入文件）
+                if let Some(path) = args.get(1) {
+                    CommandAction::HistoryWrite(path.clone())
+                } else {
+                    // -w 选项缺少文件路径参数
+                    CommandAction::Unknown("history".to_string())
+                }
+            } else if args.first().map(|s| s.as_str()) == Some("-a") {
+                // 检查是否是 -a 选项（追加新历史到文件）
+                if let Some(path) = args.get(1) {
+                    CommandAction::HistoryAppend(path.clone())
+                } else {
+                    // -a 选项缺少文件路径参数
+                    CommandAction::Unknown("history".to_string())
+                }
+            } else {
+                // 解析可选的数字参数
+                let limit = args.first().and_then(|s| s.parse::<usize>().ok());
+                CommandAction::History(limit)
+            }
+        }
         _ => {
             // 检查是否在预加载的外部命令缓存中
             if all_executables.contains_key(command) {
@@ -779,6 +933,17 @@ fn is_executable(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// 将历史记录保存到 HISTFILE（如果设置了该环境变量）
+fn save_history_to_histfile(history: &[String]) {
+    if let Ok(histfile_path) = env::var("HISTFILE") {
+        if let Ok(mut file) = File::create(&histfile_path) {
+            for cmd in history {
+                let _ = writeln!(file, "{}", cmd);
+            }
+        }
+    }
+}
+
 /// 检查命令是否是内置命令
 fn is_builtin(command: &str) -> bool {
     matches!(command, "echo" | "type" | "pwd" | "cd" | "exit" | "history")
@@ -933,4 +1098,103 @@ fn execute_pipeline(commands: Vec<(String, Vec<String>)>) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+fn generate_command_with_ai(prompts: Vec<String>) {
+    let prompt_text = prompts.join(" ");
+    
+    if prompt_text.trim().is_empty() {
+        eprintln!("AI: Please provide a description of what you want to do");
+        return;
+    }
+
+    // 创建 tokio runtime 来运行异步代码
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("AI: Failed to create async runtime: {}", e);
+            return;
+        }
+    };
+
+    // 在异步环境中调用 AI
+    match runtime.block_on(async {
+        // 检查环境变量
+        if env::var("OPENAI_API_KEY").is_err() {
+            return Err("OPENAI_API_KEY environment variable not set".to_string());
+        }
+
+        // 创建 OpenAI 客户端
+        let client = openai::Client::from_env();
+
+        // 创建专门用于生成 shell 命令的 agent
+        let agent = client
+            .agent(openai::GPT_4O)
+            .preamble(
+                "You are a helpful shell command assistant. \
+                 Given a natural language description, generate the appropriate shell command. \
+                 Return ONLY the command itself without any explanation, markdown formatting, or code blocks. \
+                 The command should be ready to execute directly in a bash/zsh shell."
+            )
+            .build();
+
+        // 获取当前工作目录作为上下文
+        let cwd = env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+
+        // 构建完整的提示
+        let full_prompt = format!(
+            "Current directory: {}\nTask: {}\nGenerate the shell command:",
+            cwd, prompt_text
+        );
+
+        // 向 AI 发送请求
+        let response = agent.prompt(&full_prompt).await
+            .map_err(|e| format!("AI request failed: {}", e))?;
+
+        Ok(response)
+    }) {
+        Ok(command) => {
+            let command = command.trim();
+            
+            // 显示 AI 生成的命令
+            println!("AI suggested command:");
+            println!("$ {}", command);
+            println!();
+            print!("Execute this command? (y/n): ");
+            io::stdout().flush().unwrap();
+
+            // 读取用户确认
+            let stdin = io::stdin();
+            let mut response = String::new();
+            if stdin.lock().read_line(&mut response).is_ok() {
+                let response = response.trim().to_lowercase();
+                if response == "y" || response == "yes" {
+                    println!("Executing...");
+                    // 使用 sh -c 来执行命令，这样可以支持管道、重定向等复杂命令
+                    let status = Command::new("sh")
+                        .arg("-c")
+                        .arg(command)
+                        .status();
+                    
+                    match status {
+                        Ok(exit_status) => {
+                            if !exit_status.success() {
+                                eprintln!("Command exited with status: {}", exit_status);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to execute command: {}", e);
+                        }
+                    }
+                } else {
+                    println!("Command cancelled.");
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("AI: {}", e);
+        }
+    }
 }
