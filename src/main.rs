@@ -17,13 +17,13 @@ use rustyline::{ColorMode, CompletionType, Config, Context, EditMode, Editor, He
 use rig::completion::Prompt;
 use rig::providers::openai;
 
-// --- 常量与类型定义 ---
+// --- Constants and Type Definitions ---
 const BUILTINS: [&str; 5] = ["echo", "exit", "type", "pwd", "history"];
 
-// Tab 补全候选词（只包含 echo 和 exit）
+// Tab completion candidates (only echo and exit)
 const COMPLETION_COMMANDS: [&str; 2] = ["echo", "exit"];
 
-/// 命令补全器
+/// Command completer
 struct CommandCompleter {
     executables: HashMap<String, PathBuf>,
 }
@@ -37,43 +37,43 @@ impl Completer for CommandCompleter {
         pos: usize,
         _ctx: &Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
-        // 只在命令开始时补全（没有空格或只有前导空格）
+        // Only complete at command start (no spaces or only leading spaces)
         let trimmed = line[..pos].trim_start();
 
-        // 如果包含空格，说明已经在输入参数了，不补全
+        // If contains space, already entering arguments, don't complete
         if trimmed.contains(' ') {
             return Ok((pos, vec![]));
         }
 
-        // 获取当前正在输入的词
+        // Get the currently typed word
         let word = &line[..pos];
         let start = word.rfind(|c: char| c.is_whitespace()).map_or(0, |i| i + 1);
         let prefix = &word[start..];
 
-        // 找到所有匹配的补全候选
+        // Find all matching completion candidates
         let mut candidates: Vec<Pair> = Vec::new();
 
-        // 1. 添加匹配的内置命令（echo 和 exit）
+        // 1. Add matching builtin commands (echo and exit)
         for cmd in &COMPLETION_COMMANDS {
             if cmd.starts_with(prefix) {
                 candidates.push(Pair {
                     display: cmd.to_string(),
-                    replacement: format!("{} ", cmd), // 添加尾随空格
+                    replacement: format!("{} ", cmd), // Add trailing space
                 });
             }
         }
 
-        // 2. 添加匹配的外部可执行文件
+        // 2. Add matching external executable files
         for executable_name in self.executables.keys() {
             if executable_name.starts_with(prefix) {
                 candidates.push(Pair {
                     display: executable_name.clone(),
-                    replacement: format!("{} ", executable_name), // 添加尾随空格
+                    replacement: format!("{} ", executable_name), // Add trailing space
                 });
             }
         }
 
-        // 按字母顺序排序
+        // Sort alphabetically
         candidates.sort_by(|a, b| a.display.cmp(&b.display));
 
         Ok((start, candidates))
@@ -94,64 +94,64 @@ impl Validator for CommandCompleter {}
 
 impl Helper for CommandCompleter {}
 
-/// 输出重定向信息
+/// Output redirection information
 #[derive(Debug, Clone)]
 struct Redirection {
-    /// 标准输出重定向文件路径
+    /// Standard output redirect file path
     stdout_file: Option<String>,
-    /// 标准输出是否为追加模式（true=>>，false=>）
+    /// Whether standard output is in append mode (true=>>, false=>)
     stdout_append: bool,
-    /// 标准错误重定向文件路径
+    /// Standard error redirect file path
     stderr_file: Option<String>,
-    /// 标准错误是否为追加模式（true=2>>，false=2>）
+    /// Whether standard error is in append mode (true=2>>, false=2>)
     stderr_append: bool,
 }
 
-/// 定义 Shell 支持的所有动作
+/// Define all actions supported by the Shell
 enum CommandAction {
     Exit,
     Echo(Vec<String>),
     Type(Vec<String>),
     Pwd,
     Ai(Vec<String>),
-    /// 外部命令：包含可执行文件的路径和参数数组
+    /// External command: contains executable file path and argument array
     External(String, Vec<String>),
-    /// 未知命令
+    /// Unknown command
     Unknown(String),
     Cd(Vec<String>),
-    /// 管道命令：包含多个命令及其参数的数组
+    /// Pipeline command: contains array of multiple commands and their arguments
     Pipeline(Vec<(String, Vec<String>)>),
-    /// 历史记录命令：可选参数指定显示最后 n 条记录
+    /// History command: optional parameter specifies showing last n records
     History(Option<usize>),
-    /// 从文件读取历史记录
+    /// Read history from file
     HistoryRead(String),
-    /// 将历史记录写入文件
+    /// Write history to file
     HistoryWrite(String),
-    /// 将新的历史记录追加到文件
+    /// Append new history to file
     HistoryAppend(String),
 }
 
 fn main() {
-    // 启动时预加载所有可执行文件 (Caching)
+    // Preload all executables at startup (Caching)
     let all_executables = get_all_executables();
 
-    // 配置 rustyline Editor
+    // Configure rustyline Editor
     let config = Config::builder()
-        .completion_type(CompletionType::List) // 列表模式：第一次TAB响铃，第二次显示列表
-        .edit_mode(EditMode::Emacs) // Emacs 编辑模式
-        .color_mode(ColorMode::Enabled) // 启用颜色
-        .history_ignore_dups(false) // 不去重复的历史命令
+        .completion_type(CompletionType::List) // List mode: first TAB rings bell, second TAB shows list
+        .edit_mode(EditMode::Emacs) // Emacs edit mode
+        .color_mode(ColorMode::Enabled) // Enable colors
+        .history_ignore_dups(false) // Don't deduplicate history commands
         .expect("Failed to configure history")
         .build();
 
-    // 创建 rustyline Editor 并设置补全器
+    // Create rustyline Editor and set completer
     let mut rl = Editor::with_config(config).expect("Failed to create editor");
     let completer = CommandCompleter {
         executables: all_executables.clone(),
     };
     rl.set_helper(Some(completer));
 
-    // 在启动时从 HISTFILE 加载历史记录
+    // Load history from HISTFILE at startup
     if let Ok(histfile_path) = env::var("HISTFILE") {
         if let Ok(content) = fs::read_to_string(&histfile_path) {
             for line in content.lines() {
@@ -163,11 +163,11 @@ fn main() {
         }
     }
 
-    // 跟踪上次写入文件时的历史记录数量
+    // Track the number of history entries at last file write
     let mut last_written_count: usize = 0;
 
     loop {
-        // 构建提示符
+        // Build prompt
         let enable = env::var("ENABLE_CUR_DIR_DISPLAY").unwrap_or(String::from("false"));
         let prompt = if enable == "true" {
             let current = env::current_dir().unwrap_or_else(|_| PathBuf::from("?"));
@@ -177,15 +177,15 @@ fn main() {
             "$ ".to_string()
         };
 
-        // 读取用户输入
+        // Read user input
         match rl.readline(&prompt) {
             Ok(line) => {
                 let trimmed = line.trim();
                 if !trimmed.is_empty() {
-                    // 添加到历史记录
+                    // Add to history
                     let _ = rl.add_history_entry(trimmed);
 
-                    // 获取历史记录（不包括当前正在输入的命令）
+                    // Get history (excluding the current command being entered)
                     let history: Vec<String> = rl.history().iter().map(|s| s.to_string()).collect();
 
                     if let Err(e) = execute_command(
@@ -200,11 +200,11 @@ fn main() {
                 }
             }
             Err(ReadlineError::Interrupted) => {
-                // Ctrl-C: 继续循环
+                // Ctrl-C: continue loop
                 continue;
             }
             Err(ReadlineError::Eof) => {
-                // Ctrl-D: 退出前保存历史
+                // Ctrl-D: save history before exit
                 let history: Vec<String> = rl.history().iter().map(|s| s.to_string()).collect();
                 save_history_to_histfile(&history);
                 break;
@@ -217,7 +217,7 @@ fn main() {
     }
 }
 
-/// 执行命令
+/// Execute command
 fn execute_command(
     input: &str,
     all_executables: &HashMap<String, PathBuf>,
@@ -225,20 +225,20 @@ fn execute_command(
     rl: &mut Editor<CommandCompleter, DefaultHistory>,
     last_written_count: &mut usize,
 ) -> io::Result<()> {
-    // 1. 解析：将字符串输入转换为强类型的枚举
+    // 1. Parse: convert string input to strongly-typed enum
     let (action, redirection) = parse_command(input, all_executables);
 
-    // 2. 执行：根据枚举成员执行相应逻辑
+    // 2. Execute: perform corresponding logic based on enum variant
     match action {
         CommandAction::Exit => {
-            // 退出前保存历史到 HISTFILE
+            // Save history to HISTFILE before exit
             save_history_to_histfile(history);
             std::process::exit(0);
         }
         CommandAction::Echo(args) => {
             let output = args.join(" ");
 
-            // 处理 stderr 重定向（创建文件但不写入）
+            // Handle stderr redirection (create file but don't write)
             if let Some(ref redir) = redirection {
                 if let Some(stderr_file) = &redir.stderr_file {
                     let _ = if redir.stderr_append {
@@ -254,7 +254,7 @@ fn execute_command(
             }
 
             if let Some(redir) = redirection {
-                // 重定向到文件（只处理stdout重定向）
+                // Redirect to file (only handle stdout redirection)
                 if let Some(stdout_file) = &redir.stdout_file {
                     let file_result = if redir.stdout_append {
                         OpenOptions::new()
@@ -269,11 +269,11 @@ fn execute_command(
                         let _ = writeln!(file, "{}", output);
                     }
                 } else {
-                    // 没有 stdout 重定向，输出到标准输出
+                    // No stdout redirection, output to standard output
                     println!("{}", output);
                 }
             } else {
-                // 输出到标准输出
+                // Output to standard output
                 println!("{}", output);
             }
         }
@@ -288,7 +288,7 @@ fn execute_command(
         CommandAction::Pwd => {
             let output = format!("{}", env::current_dir()?.display());
 
-            // 处理 stderr 重定向（创建文件但不写入）
+            // Handle stderr redirection (create file but don't write)
             if let Some(ref redir) = redirection {
                 if let Some(stderr_file) = &redir.stderr_file {
                     let _ = if redir.stderr_append {
@@ -304,7 +304,7 @@ fn execute_command(
             }
 
             if let Some(redir) = redirection {
-                // 重定向到文件（只处理stdout重定向）
+                // Redirect to file (only handle stdout redirection)
                 if let Some(stdout_file) = &redir.stdout_file {
                     let file_result = if redir.stdout_append {
                         OpenOptions::new()
@@ -329,7 +329,7 @@ fn execute_command(
             let mut cmd = Command::new(command);
             cmd.args(args);
 
-            // 如果有重定向，配置 stdout 和/或 stderr
+            // If there's redirection, configure stdout and/or stderr
             if let Some(redir) = redirection {
                 if let Some(stdout_file) = &redir.stdout_file {
                     let file_result = if redir.stdout_append {
@@ -364,15 +364,15 @@ fn execute_command(
             let _ = cmd.status();
         }
         CommandAction::Cd(args) => {
-            /*  为什么要使用set_current_dir?
+            /*  Why use set_current_dir?
 
-            在操作系统层面，cd 不能作为一个外部程序（如 /bin/cd）运行，因为它必须改变 当前 Shell 进程 的状态。
-            如果你在 Shell 里调用一个外部的 cd 脚本，它只会改变那个子进程的目录，执行完后回到 Shell，路径依然没变。
-            通过 std::env::set_current_dir，你直接触发了操作系统的 chdir 系统调用。
+            At the OS level, cd cannot run as an external program (like /bin/cd) because it must change the state of the current Shell process.
+            If you call an external cd script in the Shell, it only changes that subprocess's directory, and when it returns to the Shell, the path remains unchanged.
+            Through std::env::set_current_dir, you directly trigger the OS's chdir system call.
             */
             let arg_str = args.first().map(|s| s.as_str()).unwrap_or("");
             let target_path = if arg_str.is_empty() || arg_str == "~" {
-                // 处理 cd 或 cd ~，跳转到 HOME
+                // Handle cd or cd ~, jump to HOME
                 env::var("HOME")
                     .map(PathBuf::from)
                     .unwrap_or_else(|_| PathBuf::from("/"))
@@ -384,7 +384,7 @@ fn execute_command(
                 let error_msg = match e.kind() {
                     io::ErrorKind::NotFound => "No such file or directory",
                     io::ErrorKind::PermissionDenied => "Permission denied",
-                    io::ErrorKind::NotADirectory => "Not a directory", // 注意：部分系统支持此 Kind
+                    io::ErrorKind::NotADirectory => "Not a directory", // Note: some systems support this Kind
                     _ => "Unknown error",
                 };
                 eprintln!("cd: {}: {}", target_path.display(), error_msg);
@@ -397,23 +397,23 @@ fn execute_command(
             execute_pipeline(commands)?;
         }
         CommandAction::History(limit) => {
-            // 根据 limit 参数决定显示多少条历史记录
+            // Decide how many history entries to show based on limit parameter
             let (items_to_show, start_index) = if let Some(n) = limit {
-                // 显示最后 n 条记录
+                // Show last n entries
                 let start = history.len().saturating_sub(n);
                 (&history[start..], start)
             } else {
-                // 显示所有记录
+                // Show all entries
                 (&history[..], 0)
             };
 
-            // 显示历史记录，格式："    <行号>  <命令>"
+            // Display history, format: "    <line_number>  <command>"
             for (i, cmd) in items_to_show.iter().enumerate() {
                 println!("    {}  {}", start_index + i + 1, cmd);
             }
         }
         CommandAction::HistoryRead(path) => {
-            // 从文件读取历史记录并追加到内存中的历史列表
+            // Read history from file and append to in-memory history list
             match fs::read_to_string(&path) {
                 Ok(content) => {
                     for line in content.lines() {
@@ -429,17 +429,17 @@ fn execute_command(
             }
         }
         CommandAction::HistoryWrite(path) => {
-            // 将历史记录写入文件
+            // Write history to file
             match File::create(&path) {
                 Ok(mut file) => {
-                    // 写入所有历史记录，每条命令占一行
+                    // Write all history entries, one command per line
                     for cmd in history {
                         if let Err(e) = writeln!(file, "{}", cmd) {
                             eprintln!("history: {}: {}", path, e);
                             return Ok(());
                         }
                     }
-                    // 更新已写入的命令数量
+                    // Update the count of written entries
                     *last_written_count = history.len();
                 }
                 Err(e) => {
@@ -448,7 +448,7 @@ fn execute_command(
             }
         }
         CommandAction::HistoryAppend(path) => {
-            // 追加新的历史记录到文件
+            // Append new history to file
             match OpenOptions::new()
                 .write(true)
                 .create(true)
@@ -456,7 +456,7 @@ fn execute_command(
                 .open(&path)
             {
                 Ok(mut file) => {
-                    // 只追加自上次写入以来的新命令
+                    // Only append new commands since last write
                     let new_commands = &history[*last_written_count..];
                     for cmd in new_commands {
                         if let Err(e) = writeln!(file, "{}", cmd) {
@@ -464,7 +464,7 @@ fn execute_command(
                             return Ok(());
                         }
                     }
-                    // 更新已写入的命令数量
+                    // Update the count of written entries
                     *last_written_count = history.len();
                 }
                 Err(e) => {
@@ -477,25 +477,25 @@ fn execute_command(
     Ok(())
 }
 
-/// 解析器：负责命令分发逻辑
+/// Parser: responsible for command dispatch logic
 fn parse_command(
     input: &str,
     all_executables: &HashMap<String, PathBuf>,
 ) -> (CommandAction, Option<Redirection>) {
-    // 首先检查是否是 AI 命令（以 ! 开头）
+    // First check if it's an AI command (starts with !)
     let trimmed = input.trim();
     if trimmed.starts_with('!') {
-        // 提取 ! 后面的所有内容作为 AI 提示
+        // Extract all content after ! as AI prompt
         let prompt = trimmed[1..].trim();
         let prompt_tokens: Vec<String> = prompt.split_whitespace().map(|s| s.to_string()).collect();
         return (CommandAction::Ai(prompt_tokens), None);
     }
 
-    // 首先检查是否有管道
+    // First check if there's a pipeline
     let pipeline_parts = parse_pipeline(input);
 
     if pipeline_parts.len() > 1 {
-        // 有管道，解析每个部分
+        // Has pipeline, parse each part
         let mut commands = Vec::new();
 
         for part in pipeline_parts {
@@ -512,10 +512,10 @@ fn parse_command(
         return (CommandAction::Pipeline(commands), None);
     }
 
-    // 首先检查是否有重定向操作符
+    // First check if there are redirection operators
     let (command_part, redirection) = parse_redirection(input);
 
-    // 解析整个命令行，获取命令和参数
+    // Parse the entire command line, get command and arguments
     let tokens = parse_args(&command_part);
 
     if tokens.is_empty() {
@@ -532,38 +532,38 @@ fn parse_command(
         "type" => CommandAction::Type(args),
         "cd" => CommandAction::Cd(args),
         "history" => {
-            // 检查是否是 -r 选项（从文件读取历史）
+            // Check if it's -r option (read history from file)
             if args.first().map(|s| s.as_str()) == Some("-r") {
                 if let Some(path) = args.get(1) {
                     CommandAction::HistoryRead(path.clone())
                 } else {
-                    // -r 选项缺少文件路径参数
+                    // -r option missing file path parameter
                     CommandAction::Unknown("history".to_string())
                 }
             } else if args.first().map(|s| s.as_str()) == Some("-w") {
-                // 检查是否是 -w 选项（将历史写入文件）
+                // Check if it's -w option (write history to file)
                 if let Some(path) = args.get(1) {
                     CommandAction::HistoryWrite(path.clone())
                 } else {
-                    // -w 选项缺少文件路径参数
+                    // -w option missing file path parameter
                     CommandAction::Unknown("history".to_string())
                 }
             } else if args.first().map(|s| s.as_str()) == Some("-a") {
-                // 检查是否是 -a 选项（追加新历史到文件）
+                // Check if it's -a option (append new history to file)
                 if let Some(path) = args.get(1) {
                     CommandAction::HistoryAppend(path.clone())
                 } else {
-                    // -a 选项缺少文件路径参数
+                    // -a option missing file path parameter
                     CommandAction::Unknown("history".to_string())
                 }
             } else {
-                // 解析可选的数字参数
+                // Parse optional numeric parameter
                 let limit = args.first().and_then(|s| s.parse::<usize>().ok());
                 CommandAction::History(limit)
             }
         }
         _ => {
-            // 检查是否在预加载的外部命令缓存中
+            // Check if in preloaded external command cache
             if all_executables.contains_key(command) {
                 CommandAction::External(command.to_string(), args)
             } else {
@@ -575,7 +575,7 @@ fn parse_command(
     (action, redirection)
 }
 
-/// 解析管道：按 | 分割命令，但忽略引号内的 |
+/// Parse pipeline: split commands by | but ignore | inside quotes
 fn parse_pipeline(input: &str) -> Vec<String> {
     let mut commands = Vec::new();
     let mut current = String::new();
@@ -605,7 +605,7 @@ fn parse_pipeline(input: &str) -> Vec<String> {
                 current.push(ch);
             }
             '|' if !in_single_quote && !in_double_quote => {
-                // 找到管道符，保存当前命令
+                // Found pipe, save current command
                 if !current.trim().is_empty() {
                     commands.push(current.trim().to_string());
                     current.clear();
@@ -617,12 +617,12 @@ fn parse_pipeline(input: &str) -> Vec<String> {
         }
     }
 
-    // 添加最后一个命令
+    // Add the last command
     if !current.trim().is_empty() {
         commands.push(current.trim().to_string());
     }
 
-    // 如果没有管道，返回单个命令
+    // If no pipeline, return single command
     if commands.is_empty() {
         vec![input.to_string()]
     } else {
@@ -630,7 +630,7 @@ fn parse_pipeline(input: &str) -> Vec<String> {
     }
 }
 
-/// 解析重定向操作符，返回命令部分和重定向信息
+/// Parse redirection operators, return command part and redirection info
 fn parse_redirection(input: &str) -> (String, Option<Redirection>) {
     let mut chars = input.chars().peekable();
     let mut command_part = String::new();
@@ -643,7 +643,7 @@ fn parse_redirection(input: &str) -> (String, Option<Redirection>) {
     let mut stderr_append = false;
 
     while let Some(ch) = chars.peek() {
-        // 处理引号状态
+        // Handle quote state
         if !escaped {
             match ch {
                 '\\' if !in_single_quote => {
@@ -662,23 +662,23 @@ fn parse_redirection(input: &str) -> (String, Option<Redirection>) {
                     continue;
                 }
                 '>' if !in_single_quote && !in_double_quote => {
-                    // 找到重定向操作符
-                    chars.next(); // 消费 '>'
+                    // Found redirection operator
+                    chars.next(); // Consume '>'
 
-                    // 检查是否是追加模式 '>>'
+                    // Check if it's append mode '>>'
                     let is_append = if chars.peek() == Some(&'>') {
-                        chars.next(); // 消费第二个 '>'
+                        chars.next(); // Consume second '>'
                         true
                     } else {
                         false
                     };
 
-                    // 跳过空格
+                    // Skip spaces
                     while chars.peek() == Some(&' ') {
                         chars.next();
                     }
 
-                    // 获取输出文件名（读取到下一个重定向符或结束）
+                    // Get output filename (read until next redirect or end)
                     let file = parse_filename(&mut chars);
 
                     if !file.is_empty() {
@@ -688,27 +688,27 @@ fn parse_redirection(input: &str) -> (String, Option<Redirection>) {
                     continue;
                 }
                 '1' if !in_single_quote && !in_double_quote => {
-                    // 检查是否是 "1>" 或 "1>>" 形式
+                    // Check if it's "1>" or "1>>" form
                     let mut temp_chars = chars.clone();
-                    temp_chars.next(); // 跳过 '1'
+                    temp_chars.next(); // Skip '1'
                     if temp_chars.peek() == Some(&'>') {
-                        chars.next(); // 消费 '1'
-                        chars.next(); // 消费 '>'
+                        chars.next(); // Consume '1'
+                        chars.next(); // Consume '>'
 
-                        // 检查是否是追加模式 '1>>'
+                        // Check if it's append mode '1>>'
                         let is_append = if chars.peek() == Some(&'>') {
-                            chars.next(); // 消费第二个 '>'
+                            chars.next(); // Consume second '>'
                             true
                         } else {
                             false
                         };
 
-                        // 跳过空格
+                        // Skip spaces
                         while chars.peek() == Some(&' ') {
                             chars.next();
                         }
 
-                        // 获取输出文件名
+                        // Get output filename
                         let file = parse_filename(&mut chars);
 
                         if !file.is_empty() {
@@ -721,27 +721,27 @@ fn parse_redirection(input: &str) -> (String, Option<Redirection>) {
                     continue;
                 }
                 '2' if !in_single_quote && !in_double_quote => {
-                    // 检查是否是 "2>" 或 "2>>" 形式（stderr重定向）
+                    // Check if it's "2>" or "2>>" form (stderr redirection)
                     let mut temp_chars = chars.clone();
-                    temp_chars.next(); // 跳过 '2'
+                    temp_chars.next(); // Skip '2'
                     if temp_chars.peek() == Some(&'>') {
-                        chars.next(); // 消费 '2'
-                        chars.next(); // 消费 '>'
+                        chars.next(); // Consume '2'
+                        chars.next(); // Consume '>'
 
-                        // 检查是否是追加模式 '2>>'
+                        // Check if it's append mode '2>>'
                         let is_append = if chars.peek() == Some(&'>') {
-                            chars.next(); // 消费第二个 '>'
+                            chars.next(); // Consume second '>'
                             true
                         } else {
                             false
                         };
 
-                        // 跳过空格
+                        // Skip spaces
                         while chars.peek() == Some(&' ') {
                             chars.next();
                         }
 
-                        // 获取输出文件名
+                        // Get output filename
                         let file = parse_filename(&mut chars);
 
                         if !file.is_empty() {
@@ -761,7 +761,7 @@ fn parse_redirection(input: &str) -> (String, Option<Redirection>) {
         command_part.push(chars.next().unwrap());
     }
 
-    // 构建重定向信息
+    // Build redirection info
     let redirection = if stdout_file.is_some() || stderr_file.is_some() {
         Some(Redirection {
             stdout_file,
@@ -776,19 +776,19 @@ fn parse_redirection(input: &str) -> (String, Option<Redirection>) {
     (command_part.trim_end().to_string(), redirection)
 }
 
-/// 从字符迭代器中解析文件名（直到空格、重定向符或结束）
+/// Parse filename from character iterator (until space, redirect or end)
 fn parse_filename(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
     let mut filename = String::new();
 
     while let Some(&ch) = chars.peek() {
-        // 停止条件：遇到空格、重定向操作符或特殊字符
+        // Stop condition: space, redirection operator or special character
         if ch == ' ' || ch == '>' || ch == '1' || ch == '2' {
-            // 检查是否是重定向操作符的开始
+            // Check if it's the start of a redirection operator
             if ch == '1' || ch == '2' {
                 let mut temp = chars.clone();
                 temp.next();
                 if temp.peek() == Some(&'>') {
-                    // 这是下一个重定向操作符，停止解析
+                    // This is the next redirection operator, stop parsing
                     break;
                 }
             } else if ch == '>' || ch == ' ' {
@@ -802,7 +802,7 @@ fn parse_filename(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
     filename.trim().to_string()
 }
 
-/// 处理 type 命令的特定逻辑
+/// Handle specific logic for type command
 fn handle_type_logic(target: &str) {
     if target.is_empty() {
         return;
@@ -817,28 +817,28 @@ fn handle_type_logic(target: &str) {
     }
 }
 
-/// 解析命令行参数，正确处理引号、空格和转义
+/// Parse command line arguments, correctly handle quotes, spaces and escapes
 ///
-/// 规则：
-/// - 单引号内：所有字符都是字面量，包括双引号和反斜杠
-/// - 双引号内：保留空格，单引号被视为普通字符，\ 只转义 " 和 \ 本身
-/// - 引号外的反斜杠：转义下一个字符，使其成为字面字符，反斜杠本身被移除
-/// - 引号外的连续空格被视为分隔符
-/// - 相邻的引号字符串会被连接（无空格分隔时）
-/// - 空引号被忽略
+/// Rules:
+/// - Inside single quotes: all characters are literals, including double quotes and backslashes
+/// - Inside double quotes: preserve spaces, single quotes treated as normal chars, \ only escapes " and \ itself
+/// - Backslash outside quotes: escape next character, make it literal, backslash itself removed
+/// - Consecutive spaces outside quotes treated as separators
+/// - Adjacent quoted strings are concatenated (when no space separates them)
+/// - Empty quotes are ignored
 ///
-/// 返回：包含命令和所有参数的 token 数组
+/// Returns: token array containing command and all arguments
 fn parse_args(input: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut current_arg = String::new();
     let mut chars = input.chars().peekable();
     let mut in_single_quote = false;
     let mut in_double_quote = false;
-    let mut escaped = false; // 跟踪是否处于转义状态（仅用于引号外）
+    let mut escaped = false; // Track if in escape state (only outside quotes)
 
     while let Some(ch) = chars.next() {
         if escaped {
-            // 如果前一个字符是反斜杠（在引号外），当前字符作为字面字符
+            // If previous character was backslash (outside quotes), current char is literal
             current_arg.push(ch);
             escaped = false;
             continue;
@@ -846,49 +846,49 @@ fn parse_args(input: &str) -> Vec<String> {
 
         match ch {
             '\\' if in_double_quote => {
-                // 在双引号内的反斜杠：只转义特定字符 (", \)
+                // Backslash inside double quotes: only escape specific chars (", \)
                 if let Some(&next_ch) = chars.peek() {
                     if next_ch == '"' || next_ch == '\\' {
-                        // 转义：跳过反斜杠，添加被转义的字符
-                        chars.next(); // 消费下一个字符
+                        // Escape: skip backslash, add escaped character
+                        chars.next(); // Consume next character
                         current_arg.push(next_ch);
                     } else {
-                        // 其他字符：反斜杠作为字面字符
+                        // Other characters: backslash as literal
                         current_arg.push('\\');
                     }
                 } else {
-                    // 反斜杠是最后一个字符，作为字面字符
+                    // Backslash is last character, treat as literal
                     current_arg.push('\\');
                 }
             }
             '\\' if !in_single_quote && !in_double_quote => {
-                // 在引号外的反斜杠：设置转义标志，反斜杠本身不添加
+                // Backslash outside quotes: set escape flag, backslash itself not added
                 escaped = true;
             }
             '\'' if !in_double_quote => {
-                // 不在双引号内时，切换单引号状态
+                // When not inside double quotes, toggle single quote state
                 in_single_quote = !in_single_quote;
             }
             '"' if !in_single_quote => {
-                // 不在单引号内时，切换双引号状态
+                // When not inside single quotes, toggle double quote state
                 in_double_quote = !in_double_quote;
             }
             ' ' if !in_single_quote && !in_double_quote => {
-                // 在引号外的空格：如果当前参数非空，则完成当前参数
+                // Space outside quotes: if current arg is not empty, complete current arg
                 if !current_arg.is_empty() {
                     args.push(current_arg.clone());
                     current_arg.clear();
                 }
-                // 跳过连续空格
+                // Skip consecutive spaces
             }
             _ => {
-                // 其他字符直接添加到当前参数（包括引号内的所有字符）
+                // Other characters added directly to current arg (including all chars inside quotes)
                 current_arg.push(ch);
             }
         }
     }
 
-    // 处理最后一个参数
+    // Handle last argument
     if !current_arg.is_empty() {
         args.push(current_arg);
     }
@@ -896,7 +896,7 @@ fn parse_args(input: &str) -> Vec<String> {
     args
 }
 
-/// 动态搜索逻辑 (用于 type 命令)
+/// Dynamic search logic (for type command)
 fn find_command_in_path(command: &str) -> Option<PathBuf> {
     env::var_os("PATH").and_then(|paths| {
         env::split_paths(&paths)
@@ -905,7 +905,7 @@ fn find_command_in_path(command: &str) -> Option<PathBuf> {
     })
 }
 
-/// 预加载所有外部命令 (用于执行校验)
+/// Preload all external commands (for execution validation)
 fn get_all_executables() -> HashMap<String, PathBuf> {
     let mut map = HashMap::new();
 
@@ -926,14 +926,14 @@ fn get_all_executables() -> HashMap<String, PathBuf> {
     map
 }
 
-/// 通用判断：路径是否存在且具有执行权限
+/// Common check: whether path exists and has execute permission
 fn is_executable(path: &Path) -> bool {
     fs::metadata(path)
         .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
 }
 
-/// 将历史记录保存到 HISTFILE（如果设置了该环境变量）
+/// Save history to HISTFILE (if the environment variable is set)
 fn save_history_to_histfile(history: &[String]) {
     if let Ok(histfile_path) = env::var("HISTFILE") {
         if let Ok(mut file) = File::create(&histfile_path) {
@@ -944,25 +944,25 @@ fn save_history_to_histfile(history: &[String]) {
     }
 }
 
-/// 检查命令是否是内置命令
+/// Check if command is a builtin command
 fn is_builtin(command: &str) -> bool {
     matches!(command, "echo" | "type" | "pwd" | "cd" | "exit" | "history")
 }
 
-/// 在子进程中执行内置命令
+/// Execute builtin command in child process
 fn execute_builtin_in_child(command: &str, args: &[String]) {
-    // 对于不使用 stdin 的命令（type, pwd），需要消耗掉所有 stdin 输入
-    // 这样可以避免前面的命令因为管道关闭而产生 "Broken pipe" 错误
-    // 注意：echo 不应该消耗 stdin，因为它只输出参数
+    // For commands that don't use stdin (type, pwd), need to consume all stdin input
+    // This avoids "Broken pipe" error from previous command when pipe is closed
+    // Note: echo should not consume stdin as it only outputs arguments
     let should_consume_stdin = matches!(command, "type" | "pwd");
 
     if should_consume_stdin {
-        // 读取并丢弃所有 stdin 数据
+        // Read and discard all stdin data
         let mut buffer = [0u8; 8192];
         loop {
             match unsafe { libc::read(0, buffer.as_mut_ptr() as *mut libc::c_void, buffer.len()) } {
-                n if n > 0 => continue, // 继续读取
-                _ => break,             // EOF 或错误，停止读取
+                n if n > 0 => continue, // Continue reading
+                _ => break,             // EOF or error, stop reading
             }
         }
     }
@@ -991,14 +991,14 @@ fn execute_builtin_in_child(command: &str, args: &[String]) {
     }
 }
 
-/// 执行管道命令
+/// Execute pipeline command
 fn execute_pipeline(commands: Vec<(String, Vec<String>)>) -> io::Result<()> {
     if commands.is_empty() {
         return Ok(());
     }
 
     if commands.len() == 1 {
-        // 只有一个命令，直接执行
+        // Only one command, execute directly
         let (command, args) = &commands[0];
         if is_builtin(command) {
             execute_builtin_in_child(command, args);
@@ -1008,10 +1008,10 @@ fn execute_pipeline(commands: Vec<(String, Vec<String>)>) -> io::Result<()> {
         return Ok(());
     }
 
-    // 创建管道并执行多个命令
+    // Create pipes and execute multiple commands
     let mut pipes: Vec<(i32, i32)> = Vec::new();
 
-    // 创建 n-1 个管道（n 是命令数量）
+    // Create n-1 pipes (n is the number of commands)
     for _ in 0..commands.len() - 1 {
         let mut pipe_fds = [0i32; 2];
         unsafe {
@@ -1033,32 +1033,32 @@ fn execute_pipeline(commands: Vec<(String, Vec<String>)>) -> io::Result<()> {
             if pid < 0 {
                 return Err(io::Error::last_os_error());
             } else if pid == 0 {
-                // 子进程
+                // Child process
 
-                // 设置 stdin：如果不是第一个命令，从前一个管道读取
+                // Setup stdin: if not first command, read from previous pipe
                 if i > 0 {
                     let (read_fd, _) = pipes[i - 1];
                     libc::dup2(read_fd, 0);
                 }
 
-                // 设置 stdout：如果不是最后一个命令，写入下一个管道
+                // Setup stdout: if not last command, write to next pipe
                 if i < commands.len() - 1 {
                     let (_, write_fd) = pipes[i];
                     libc::dup2(write_fd, 1);
                 }
 
-                // 关闭所有管道文件描述符
+                // Close all pipe file descriptors
                 for (read_fd, write_fd) in &pipes {
                     libc::close(*read_fd);
                     libc::close(*write_fd);
                 }
 
                 if is_cmd_builtin {
-                    // 执行内置命令
+                    // Execute builtin command
                     execute_builtin_in_child(command, args);
                     std::process::exit(0);
                 } else {
-                    // 执行外部命令
+                    // Execute external command
                     let cmd_cstring = std::ffi::CString::new(command.as_str()).unwrap();
                     let mut args_cstring: Vec<std::ffi::CString> = vec![cmd_cstring.clone()];
                     args_cstring.extend(
@@ -1070,18 +1070,18 @@ fn execute_pipeline(commands: Vec<(String, Vec<String>)>) -> io::Result<()> {
                     args_ptr.push(std::ptr::null());
 
                     libc::execvp(cmd_cstring.as_ptr(), args_ptr.as_ptr());
-                    // 如果 execvp 返回，说明出错了
+                    // If execvp returns, an error occurred
                     eprintln!("{}: command not found", command);
                     std::process::exit(127);
                 }
             } else {
-                // 父进程，记录子进程 PID
+                // Parent process, record child process PID
                 pids.push(pid);
             }
         }
     }
 
-    // 父进程关闭所有管道
+    // Parent process closes all pipes
     unsafe {
         for (read_fd, write_fd) in &pipes {
             libc::close(*read_fd);
@@ -1089,7 +1089,7 @@ fn execute_pipeline(commands: Vec<(String, Vec<String>)>) -> io::Result<()> {
         }
     }
 
-    // 等待所有子进程完成
+    // Wait for all child processes to complete
     for pid in pids {
         unsafe {
             let mut status = 0;
@@ -1108,7 +1108,7 @@ fn generate_command_with_ai(prompts: Vec<String>) {
         return;
     }
 
-    // 创建 tokio runtime 来运行异步代码
+    // Create tokio runtime to run async code
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
@@ -1117,17 +1117,17 @@ fn generate_command_with_ai(prompts: Vec<String>) {
         }
     };
 
-    // 在异步环境中调用 AI
+    // Call AI in async environment
     match runtime.block_on(async {
-        // 检查环境变量
+        // Check environment variable
         if env::var("OPENAI_API_KEY").is_err() {
             return Err("OPENAI_API_KEY environment variable not set".to_string());
         }
 
-        // 创建 OpenAI 客户端
+        // Create OpenAI client
         let client = openai::Client::from_env();
 
-        // 创建专门用于生成 shell 命令的 agent
+        // Create agent specifically for generating shell commands
         let agent = client
             .agent(openai::GPT_4O)
             .preamble(
@@ -1138,18 +1138,18 @@ fn generate_command_with_ai(prompts: Vec<String>) {
             )
             .build();
 
-        // 获取当前工作目录作为上下文
+        // Get current working directory as context
         let cwd = env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "unknown".to_string());
 
-        // 构建完整的提示
+        // Build complete prompt
         let full_prompt = format!(
             "Current directory: {}\nTask: {}\nGenerate the shell command:",
             cwd, prompt_text
         );
 
-        // 向 AI 发送请求
+        // Send request to AI
         let response = agent.prompt(&full_prompt).await
             .map_err(|e| format!("AI request failed: {}", e))?;
 
@@ -1158,21 +1158,21 @@ fn generate_command_with_ai(prompts: Vec<String>) {
         Ok(command) => {
             let command = command.trim();
             
-            // 显示 AI 生成的命令
+            // Display AI generated command
             println!("AI suggested command:");
             println!("$ {}", command);
             println!();
             print!("Execute this command? (y/n): ");
             io::stdout().flush().unwrap();
 
-            // 读取用户确认
+            // Read user confirmation
             let stdin = io::stdin();
             let mut response = String::new();
             if stdin.lock().read_line(&mut response).is_ok() {
                 let response = response.trim().to_lowercase();
                 if response == "y" || response == "yes" {
                     println!("Executing...");
-                    // 使用 sh -c 来执行命令，这样可以支持管道、重定向等复杂命令
+                    // Use sh -c to execute command, supporting pipes, redirects and other complex commands
                     let status = Command::new("sh")
                         .arg("-c")
                         .arg(command)
